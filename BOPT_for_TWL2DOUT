@@ -1,0 +1,153 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import subprocess
+import numpy as np
+import scipy.stats as stats
+from scipy.interpolate import interp1d
+from bayes_opt import BayesianOptimization
+from bayes_opt import UtilityFunction
+import os
+import probTool_Taehwan as PTTH
+
+def TWL2DOUT_fitting():
+### RUN SPICE simulation
+    os.chdir("/home/Taehwan/simulation/sensingYield")
+    subprocess.call("runHspice WL2SAOUT_bak.sp", shell=True)
+    
+    np.random.seed(1)
+    rv = stats.norm(loc=0, scale=1)
+    
+    nfin = 1
+    os.chdir("/home/Taehwan/simulation/sensingYield")
+    riseDelay = np.loadtxt("/home/Taehwan/simulation/3invTEST/stepConv/riseDelay{}.txt".format(nfin)).reshape(33,1)
+    fallDelay = np.loadtxt("/home/Taehwan/simulation/3invTEST/stepConv/fallDelay{}.txt".format(nfin)).reshape(33,1)
+    sigmaRange = np.linspace(-8,8,33)
+    
+    Frise = interp1d(sigmaRange.squeeze(), riseDelay.squeeze())
+    Ffall = interp1d(sigmaRange.squeeze(), fallDelay.squeeze())
+    
+    big_sigmaRange = np.linspace(-8,8,41)
+    Frise_grid, Ffall_grid = [[],[]]
+    for a in big_sigmaRange:
+        Frise_grid.append(Frise(a))
+        Ffall_grid.append(Ffall(a))
+    Frise_grid = np.array(Frise_grid)
+    Ffall_grid = np.array(Ffall_grid)
+    ## grep results
+    subprocess.call(":grepVar.csh wl2sae WL2SAOUT_bak.lis > WL2SAE.txt",shell = True)
+    subprocess.call(":grepVar.csh sae2saout WL2SAOUT_bak.lis > SAE2SAOUT.txt",shell = True)
+    train_WL2SAE = np.loadtxt("/home/Taehwan/simulation/sensingYield/WL2SAE.txt")[0:100]
+    train_SAE2DOUT = np.loadtxt("/home/Taehwan/simulation/sensingYield/SAE2SAOUT.txt")[0:100]
+    train_WL2DOUT = train_WL2SAE + train_SAE2DOUT   
+    train_WL2DOUT_100 = train_WL2DOUT[0:100]
+    dummy = stats.probplot(train_WL2DOUT_100)
+    # mean_WL2DOUT = dummy[0][1][50]
+    mean_WL2DOUT = np.mean(train_WL2DOUT_100)
+    trainingsigma = dummy[0][0][16:84]
+    trainingDelay = dummy[0][1][16:84]
+    # mean_WL2DOUT = np.mean(train_WL2DOUT)
+    N = 33
+    convRange = np.linspace(-8,8,N)
+    
+    def LossF (Trainsigma, Traindelay, Ffitted):
+        dummy_array = []
+        for V in Trainsigma:
+            dummy_array.append(Ffitted(V))
+        Loss = np.average(abs(np.array(Traindelay) - np.array(dummy_array)))
+        return Loss
+    
+    optimizer= BayesianOptimization(
+            f=None,
+            pbounds={'ratio1': (1,8),
+                       'ratio2':(1,8), 'Srange':(2,8)}, verbose=2,random_state=1,)
+    utility = UtilityFunction(kind="ei", kappa=1.96, xi=0)
+    
+    ### initial input 1
+    init_input1 = {'ratio1':5,  'ratio2':5, 'Srange':5}
+    
+    fallRatio = init_input1['ratio1']
+    riseRatio = init_input1['ratio2']
+    sigmaRange = init_input1['Srange']
+    
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay,riseDelay, X_range1 = convRange, 
+                                                    X_range2 = convRange, ratio1=fallRatio, 
+                                                    ratio2=riseRatio , Conv_N=N, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    diff = mean_WL2DOUT - fittedValue[16]
+    Fpred = interp1d(np.array(fittedRange).squeeze(), (np.array(fittedValue)+diff).squeeze())
+    customRange = np.linspace(-init_input1['Srange'], init_input1['Srange'], 33)
+    Fpred = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    
+    CurrentLoss = LossF(trainingsigma, trainingDelay, Fpred)
+    # print("Current Loss Value is : ",-CurrentLoss )
+    optimizer.register(params = init_input1, target = -CurrentLoss)
+    
+    ### initial input 2
+    init_input2 = {'ratio1':7,  'ratio2':8, 'Srange':6}
+    
+    fallRatio = init_input2['ratio1']
+    riseRatio = init_input2['ratio2']
+    sigmaRange = init_input2['Srange']
+    
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay,riseDelay, X_range1 = convRange, 
+                                                    X_range2 = convRange, ratio1=fallRatio, 
+                                                    ratio2=riseRatio , Conv_N=N, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    diff = mean_WL2DOUT - fittedValue[16]
+    Fpred = interp1d(np.array(fittedRange).squeeze(), (np.array(fittedValue)+diff).squeeze())
+    customRange = np.linspace(-init_input2['Srange'], init_input2['Srange'], 33)
+    Fpred = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    CurrentLoss = LossF(trainingsigma, trainingDelay, Fpred)
+    # print("Current Loss Value is : ",-CurrentLoss )
+    optimizer.register(params = init_input2, target = -CurrentLoss)
+    
+    k = 0
+    while True:
+        next_point = optimizer.suggest(utility)
+        
+        fallRatio = next_point['ratio1']
+        riseRatio = next_point['ratio2']
+        
+        [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay,riseDelay, X_range1 = convRange, 
+                                                        X_range2 = convRange, ratio1=fallRatio, 
+                                                        ratio2=riseRatio , Conv_N=N, inverse = 1 )
+        [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+        
+        diff = mean_WL2DOUT - fittedValue[16]
+        Fpred = interp1d(np.array(fittedRange).squeeze(), (np.array(fittedValue)+diff).squeeze())
+        customRange = np.linspace(-next_point['Srange'], next_point['Srange'], 33)
+        Fpred = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+        
+        CurrentLoss = LossF(trainingsigma, trainingDelay, Fpred)
+        # print("Current input value is : \n",next_point)
+        # print("Current Loss Value is : ",-CurrentLoss )
+        # print("BEST input & loss value is ", optimizer.max)
+        optimizer.register(params = next_point, target = -CurrentLoss)
+        # print("Iteration of the TWL2DOUT fitting {}  ".format(k))
+        k += 1
+        if k >= 100:
+            print("TWLDOUT fitting is done!")
+            break
+        
+    next_point = optimizer.max
+    fallRatio = next_point['params']['ratio1']
+    riseRatio = next_point['params']['ratio2']
+    
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay,riseDelay, X_range1 = convRange, 
+                                                        X_range2 = convRange, ratio1=fallRatio, 
+                                                        ratio2=riseRatio , Conv_N=N, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    diff = mean_WL2DOUT - fittedValue[16]
+    Fpred = interp1d(np.array(fittedRange).squeeze(), (np.array(fittedValue)+diff).squeeze())
+    customRange = np.linspace(-next_point['params']['Srange'], next_point['params']['Srange'], 33)
+    Fpred = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    np.savetxt("/home/Taehwan/simulation/sensingYield/WL2DOUT_3sigma.txt", (np.array(Fpred(3))).reshape(1,1))
+    
+    return 1
