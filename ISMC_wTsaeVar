@@ -1,0 +1,121 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import subprocess
+import numpy as np
+import scipy as sp
+import scipy.stats
+import os
+
+np.random.seed(11)
+Tsae = np.loadtxt("/home/Taehwan/simulation/YieldMonte/Tsae0.txt")
+### if u want to simulate HSPICE results, change the Const 0 to 1
+simulateConst = 0
+
+grepConst = 1
+
+# ### simulate for ISMC, # it has PD, PG, VOS order
+# num=1
+# rv = sp.stats.norm(0,1)
+# if simulateConst == 1:
+#     for a in Tsae:
+#         OSVFileName_instance = "OSV{}p_116.txt".format(int(a))
+#         OSVlist_instance = np.loadtxt("/home/Taehwan/simulation/sensingYield/OSV_dir/{}".format(OSVFileName_instance))
+#         print(OSVlist_instance)
+#         PD_list = np.array(".param pdl_osv = '{}'".format(OSVlist_instance[0]))
+#         PG_list = np.array(".param pgl_osv = '{}'".format(OSVlist_instance[1]))
+#         VOS_list = np.array(".param vos_osv = '{}'".format(OSVlist_instance[2]))
+#         total_list = np.r_[PD_list, PG_list, VOS_list]
+#         np.savetxt("/home/Taehwan/simulation/YieldMonte/OSVparams{}.sp".format(num), total_list, fmt='%s')
+#         num += 1
+#     subprocess.call("runSeedExpan13_ISMC_wTsaeVar.csh", shell=True)
+
+iterationNUM = 1
+procedure = 1
+for a in Tsae:
+    NoD= 30000
+    ISMC_list = []
+    ### OSV loading ,insert your OSV file name. OSV file must be included [OSVpg, OSVpd, OSVvos]^T
+    OSVFileName = "OSV{}p_116.txt".format(int(a))
+    OSVlist = np.loadtxt("/home/Taehwan/simulation/sensingYield/OSV_dir/{}".format(OSVFileName))
+    
+    ### grep data
+    PDL_dummy = list([])
+    PGL_dummy = list([])
+    VOSsigma_dummy = list([])
+    readyield_dummy = list([])
+    deltavbl_dummy = list([])
+    for start in range(1,11):
+        if grepConst == 1:
+            os.chdir("/home/Taehwan/simulation/YieldMonte")
+            subprocess.call("grep -w '75:vg' ISMC%sp_seed%s.lis | awk '{print $3}' > PDLvth%sp.txt"%(int(a), iterationNUM, int(a)), shell=True)
+            subprocess.call("grep -w '77:vg' ISMC%sp_seed%s.lis | awk '{print $3}' > PGLvth%sp.txt"%(int(a), iterationNUM, int(a)), shell=True)
+            subprocess.call(":grepVar.csh offsetvoltage ISMC{}p_seed{}.lis > VOSsigma{}p.txt".format(int(a),iterationNUM, int(a)), shell=True)
+            subprocess.call(":grepVar.csh readyield ISMC{}p_seed{}.lis > readyield{}p.txt".format(int(a),iterationNUM, int(a)),  shell=True)
+            subprocess.call(":grepVar.csh deltavbl_test ISMC{}p_seed{}.lis > deltavbl{}p.txt".format(int(a),iterationNUM, int(a)), shell=True)
+            
+            PDL_dummy.append(np.loadtxt("/home/Taehwan/simulation/YieldMonte/PDLvth%sp.txt"%(int(a)))[0:NoD])
+            PGL_dummy.append(np.loadtxt("/home/Taehwan/simulation/YieldMonte/PGLvth%sp.txt"%(int(a)))[0:NoD])
+            VOSsigma_dummy.append(np.loadtxt("/home/Taehwan/simulation/YieldMonte/VOSsigma%sp.txt"%(int(a)))[0:NoD])
+            readyield_dummy.append(np.loadtxt("/home/Taehwan/simulation/YieldMonte/readyield%sp.txt"%(int(a)))[0:NoD])
+            deltavbl_dummy.append(np.loadtxt("/home/Taehwan/simulation/YieldMonte/deltavbl%sp.txt"%(int(a)))[0:NoD])
+            iterationNUM += 1
+    if grepConst == 1:
+        np.savetxt("/home/Taehwan/simulation/YieldMonte/PDLvth%sp.txt"%(int(a)), np.array(PDL_dummy).reshape(NoD,1))
+        np.savetxt("/home/Taehwan/simulation/YieldMonte/PGLvth%sp.txt"%(int(a)), np.array(PGL_dummy).reshape(NoD,1))
+        np.savetxt("/home/Taehwan/simulation/YieldMonte/VOSsigma%sp.txt"%(int(a)), np.array(VOSsigma_dummy).reshape(NoD,1))
+        np.savetxt("/home/Taehwan/simulation/YieldMonte/readyield%sp.txt"%(int(a)), np.array(readyield_dummy).reshape(NoD,1))
+        np.savetxt("/home/Taehwan/simulation/YieldMonte/deltavbl%sp.txt"%(int(a)), np.array(deltavbl_dummy).reshape(NoD,1))
+    iterationNUM = 1
+    # break
+            
+    ### sigma definition
+    vtSigma = 0.03195741847747844
+    vosSigma =  np.loadtxt("/home/Taehwan/simulation/VLSA_OS/Vos_dir/vos{}{}{}.txt".format(1,1,6))
+    startpoint = 0
+    interval = 1000
+    for ttt in range(0,30):
+        
+        ### simulation data Loading    
+        deltavbl = np.loadtxt("/home/Taehwan/simulation/YieldMonte/deltavbl%sp.txt"%(int(a)))[startpoint:startpoint+interval]
+        PD_data = -np.loadtxt("/home/Taehwan/simulation/YieldMonte/PDLvth%sp.txt"%(int(a)))[startpoint:startpoint+interval]
+        PG_data = -np.loadtxt("/home/Taehwan/simulation/YieldMonte/PGLvth%sp.txt"%(int(a)))[startpoint:startpoint+interval]
+        VOS_data = np.random.normal(OSVlist[2]*vosSigma, vosSigma,interval)
+        readyield_data = deltavbl - VOS_data
+        # VOS_data = np.loadtxt("/home/Taehwan/simulation/YieldMonte/VOSsigma%sp.txt"%(int(a)))[startpoint:startpoint+interval]
+        # readyield_data = np.loadtxt("/home/Taehwan/simulation/YieldMonte/readyield%sp.txt"%(int(a)))[startpoint:startpoint+interval]
+        
+        
+        ### definition of the distribution for determining ISMC equaiton
+        ## origin distribution
+        PDgauss_origin = sp.stats.norm(0, vtSigma)
+        PGgauss_origin = sp.stats.norm(0, vtSigma)
+        VOSgauss_origin = sp.stats.norm(0, vosSigma)
+        ## shifted mean distribution
+        PDgauss_shifted = sp.stats.norm(OSVlist[0]*vtSigma, vtSigma)
+        PGgauss_shifted = sp.stats.norm(OSVlist[1]*vtSigma, vtSigma)
+        VOSgauss_shifted = sp.stats.norm(OSVlist[2]*vosSigma, vosSigma)
+        
+        ### Calculation for ISMC equation
+        dummy = []
+        failedNum = 0
+        ISMC = 0
+        for iteration in range(0, len(PD_data)):
+            # if deltavbl[iteration] <= vosDis[iteration]:
+            if readyield_data[iteration] < 0 :
+                failedNum += 1
+                PDconst = PDgauss_origin.pdf(PD_data[iteration]) / PDgauss_shifted.pdf(PD_data[iteration])
+                PGconst = PGgauss_origin.pdf(PG_data[iteration]) / PGgauss_shifted.pdf(PG_data[iteration])
+                VOSconst = VOSgauss_origin.pdf(VOS_data[iteration]) / VOSgauss_shifted.pdf(VOS_data[iteration])
+                ISMC += PDconst * PGconst * VOSconst
+                # dummy.append([PDconst, PGconst, VOSconst])
+        # dummy = np.array(dummy)
+        print("current Tsae = {}ps".format(int(a)))
+        print("ISMC = ", ISMC*(1/len(PD_data)))
+        # ISMC_list.append(rv.ppf(ISMC*(1/len(PD_data))))
+        ISMC_list.append(ISMC*(1/len(PD_data)))
+        startpoint += interval
+    # ISMC_list = np.array(ISMC_list)
+    np.savetxt("/home/Taehwan/simulation/YieldMonte/mean_ISMC{}p_{}.txt".format(int(a),interval), np.array(ISMC_list))
+    procedure += 1
+    # break
