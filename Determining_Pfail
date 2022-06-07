@@ -1,0 +1,147 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import fileinput
+import subprocess
+import numpy as np
+import math
+import pandas as pd
+import scipy as sp
+import scipy.stats
+import re
+import hspiceSimTool as hsp
+import random as rd
+import matplotlib.pyplot as plt
+from scipy.stats import probplot
+from bayes_opt import BayesianOptimization
+from bayes_opt import UtilityFunction
+from scipy.stats import norm
+from scipy.interpolate import interp1d
+import probTool_Taehwan as PTTH
+
+def sigmaMapping(X,Y):
+    N_X = len(X)
+    N_Y = len(Y)
+    X = np.array(X).squeeze()
+    Y = np.array(Y).squeeze()
+    fl = interp1d(X,Y,kind = 'linear')
+    return fl
+
+rv = scipy.stats.norm(loc=0,scale=1)
+
+proposed_mean = []
+proposed_ncomp_mean = []
+
+for lll in range(0,30):
+    
+    
+    ### Data Load
+    Twl2saeAry = np.loadtxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/Twl2sae10116_fitting_{}_5000.txt".format(int(lll)))
+    Twl2saeSIGMA = Twl2saeAry[:,0]
+    Twl2saeDELAY = Twl2saeAry[:,1]
+    
+    F_Twl2sae = interp1d(Twl2saeSIGMA,Twl2saeDELAY,kind = 'linear')
+    sigma = np.linspace(-6,6,13)
+    Tsae = []
+    ### 
+    for k in sigma:
+        # Tsae.append(int(round(F_Twl2sae(k)*1e12, 0)))
+        Tsae.append(int(round(F_Twl2sae(k)*1e12)))
+    
+    fOSV = sigmaMapping(Tsae, sigma)
+    ###OSV Searching for all of Tsae
+    # for o in Tsae:
+    #     try:
+    #         print("current Twl2sae(ps) = ",o)
+    #         dummy_value = np.loadtxt("/home/Taehwan/simulation/sensingYield/OSV_dir/OSV{}p_{}{}{}.txt".format(o, 1,1,6))
+    #     except:
+    #         print("There is no OSV file !")
+    #         print("current Twl2sae(ps) = ",o)
+    #         subprocess.call("osvCAL.py {} {} {} {}".format(o, 1,1,6),shell=True)
+    #         subprocess.call("osvCOMP.py {} {} {} {}".format(o, 1,1,6),shell=True)
+    for o in Tsae:  
+        print("current Twl2sae(ps) = ",o)
+        subprocess.call("osvCAL.py {} {} {} {}".format(o, 1,1,6),shell=True)
+        subprocess.call("osvCOMP.py {} {} {} {}".format(o, 1,1,6),shell=True)
+    
+    OSVs = []
+    Norms = []
+    OSVs_ncomp = []
+    Norms_ncomp = []
+    i = 0
+    for m in Tsae:
+        OSVs.append(np.loadtxt("/home/Taehwan/simulation/sensingYield/OSV_dir/OSV{}p_{}{}{}.txt".format(m, 1,1,6)))
+        Norms.append(np.sqrt(OSVs[i][0]**2 + OSVs[i][1]**2 + OSVs[i][2]**2))
+        OSVs_ncomp.append(np.loadtxt("/home/Taehwan/simulation/sensingYield/OSV_dir/OSV{}p_{}{}{}_ncomp.txt".format(m, 1,1,6)))
+        Norms_ncomp.append(np.sqrt(OSVs_ncomp[i][0]**2 + OSVs_ncomp[i][1]**2 + OSVs_ncomp[i][2]**2))
+    
+        i += 1
+    
+    ## Plot
+    # plt.plot(Tsae, rv.cdf(-np.array(Norms)), linestyle='--', label='Norm of OSV')
+    # plt.scatter(Tsae[6],rv.cdf(-Norms[6]), color='r', label='0sigma Point', s=100)
+    # plt.scatter(Tsae,rv.cdf(-np.array(Norms)))
+    # plt.xlabel("T_WL2SAE(ps)")
+    # plt.xlabel("T_WL2SAE(sigma)")
+    # plt.ylabel("Failure Rate")
+    # plt.title("T_WL2SAE(sigma) vs Failure Rate")
+    # plt.title("T_WL2SAE(ps) vs Failure Rate")
+    
+    F_weightSUM = interp1d(Tsae, np.array(Norms), kind='linear')
+    F_weightSUM_ncomp = interp1d(Tsae, np.array(Norms_ncomp), kind='linear')
+    i=0
+    NewData = []
+    NewData_ncomp = []
+    sigmaNEW = []
+    for m in range(0,len(Tsae)):
+        if m == len(Tsae)-1:
+            break
+        while True:
+            Ary = np.linspace(Tsae[m],Tsae[m+1],100,endpoint=False)
+            NewData.append(F_weightSUM(Ary[i]))
+            NewData_ncomp.append(F_weightSUM_ncomp(Ary[i]))
+            sigmaNEW.append(fOSV(Ary[i]))
+            i += 1
+            if i>=100:
+                i=0
+                break
+    
+    NewData = np.array(NewData)
+    NewData_comp = np.array(NewData_ncomp)
+    ## Plot
+    # plt.scatter(sigmaNEW[600], NewData[600], color='r', label='0sigma Point')
+    # plt.plot(sigmaNEW, NewData, linestyle='--')
+    
+    # ## Plot Log Scale
+    # plt.scatter(sigmaNEW[600],rv.cdf(-NewData[600]), color='r', label='0sigma Point (compensated)')
+    # plt.scatter(sigmaNEW[600],rv.cdf(-NewData_ncomp[600]), color='b', label='0sigma Point (non-compensated)')
+    # plt.plot(sigmaNEW, rv.cdf(-NewData), linestyle='--')
+    # plt.plot(sigmaNEW, rv.cdf(-NewData_comp))
+    # plt.yscale("log")
+    # plt.legend()
+    
+    #### Weight Sum CAL
+    weightSUM_Prob = 0
+    weightSUM_Prob_ncomp = 0
+    i=0
+    for a in sigmaNEW:
+        weightSUM_Prob += rv.cdf(-NewData[i])*(rv.cdf(sigmaNEW[i+1]) - rv.cdf(sigmaNEW[i]))
+        weightSUM_Prob_ncomp += rv.cdf(-NewData_ncomp[i])*(rv.cdf(sigmaNEW[i+1]) - rv.cdf(sigmaNEW[i]))
+        i += 1
+        if i >= len(sigmaNEW)-1:
+            break
+        
+    print("Origin OSV(compensated) Value is : ", Norms[6])
+    print("WeightSUM OSV(compensated) is : ", weightSUM_Prob)
+    
+    print("Origin OSV(noncompensated) Value is : ", Norms_ncomp[6])
+    print("WeightSUM OSV(noncompensated) is : ", weightSUM_Prob_ncomp)
+    
+    print("Current iteration is :", lll)
+    np.savetxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/pfail_10116_{}_2000.txt".format(int(lll)), np.array(weightSUM_Prob).reshape(1,1) )
+    np.savetxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/pfail_10116_ncomp_{}_2000.txt".format(int(lll)), np.array(weightSUM_Prob_ncomp).reshape(1,1))
+    np.savetxt("/home/Taehwan/simulation/YieldMonte/Tsae{}.txt".format(int(lll)), Tsae)
+    
+    proposed_mean.append(weightSUM_Prob)
+    proposed_ncomp_mean.append(weightSUM_Prob_ncomp)
