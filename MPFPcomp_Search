@@ -1,0 +1,149 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import sys
+import subprocess
+import numpy as np
+
+np.random.seed = 1
+
+Tsae = int(sys.argv[1])
+nfin_pd = int(sys.argv[2])
+nfin_pu = int(sys.argv[3])
+nfin_foot = int(sys.argv[4])
+
+if len(sys.argv) != 5:
+ 	print("ERROR! Please insert your input properly:")
+ 	print("Usage : osvCOMP.py T_SAE(ps) nfin_pd nfin_pu nfin_foot")
+ 	sys.exit()
+
+# ### input def
+# Tsae = 65
+# nfin_pd = 1
+# nfin_pu = 1
+# nfin_foot = 6
+
+PDPG_range = np.linspace(0,16,81)
+vos_sigma = np.loadtxt("/home/Taehwan/simulation/VLSA_OS/Vos_dir/vos{}{}{}.txt".format(nfin_pd,nfin_pu,nfin_foot))
+
+### sigma value definition
+vt_sigma = 0.03195741847747844
+
+### bisection Simulation Run
+subprocess.call("runHspice SRAMbisection.sp", shell=True)
+
+### grep OSV from Simulation Result
+subprocess.call("grep '.param opt' SRAMbisection.lis | awk '{print $4}' > bisectionValue.txt ", shell=True)
+previousRatio = np.loadtxt("/home/Taehwan/simulation/sensingYield/Ratio.txt")
+previousBisectionResult = np.loadtxt("/home/Taehwan/simulation/sensingYield/bisectionValue.txt")
+
+### PD, PG, VOS OSV
+previousOSV = previousRatio*previousBisectionResult
+osv_pd = previousOSV[0]
+osv_pg = previousOSV[1]
+osv_vos = previousOSV[2]
+
+MPFPlist = [[osv_pd, osv_pg]]
+i = 0
+while True:
+    
+    ### PD gradient
+    PD_list = np.array(".param pdl_vth = '{}*vt_sigma'".format(osv_pd))
+    PG_list = np.array(".param pgl_vth = '{}*vt_sigma'".format(osv_pg))
+    VOS_list = np.array(".param vos_vth = '{}*vos_sigma'".format(osv_vos))
+    total_list = np.r_[PD_list, PG_list, VOS_list]
+    np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio_grad.sp", total_list, fmt='%s')
+    subprocess.call("runHspice gradient.sp", shell=True)
+    subprocess.call(":grepVar.csh deltavbl_test gradient.lis > oriVBL.txt", shell=True)
+    originDVBL = np.loadtxt("/home/Taehwan/simulation/sensingYield/oriVBL.txt")
+    
+    ### PD gradient
+    PD_list = np.array(".param pdl_vth = '{}*vt_sigma'".format(osv_pd+0.2))
+    PG_list = np.array(".param pgl_vth = '{}*vt_sigma'".format(osv_pg))
+    VOS_list = np.array(".param vos_vth = '{}*vos_sigma'".format(osv_vos))
+    total_list = np.r_[PD_list, PG_list, VOS_list]
+    np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio_grad.sp", total_list, fmt='%s')
+    subprocess.call("runHspice gradient.sp", shell=True)
+    subprocess.call(":grepVar.csh deltavbl_test gradient.lis > pd_grad.txt", shell=True)
+    
+    ### PG gradient
+    PD_list = np.array(".param pdl_vth = '{}*vt_sigma'".format(osv_pd))
+    PG_list = np.array(".param pgl_vth = '{}*vt_sigma'".format(osv_pg+0.2))
+    VOS_list = np.array(".param vos_vth = '{}*vos_sigma'".format(osv_vos))
+    total_list = np.r_[PD_list, PG_list, VOS_list]
+    np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio_grad.sp", total_list, fmt='%s')
+    subprocess.call("runHspice gradient.sp", shell=True)
+    subprocess.call(":grepVar.csh deltavbl_test gradient.lis > pg_grad.txt", shell=True)
+    
+    SPD = np.loadtxt("/home/Taehwan/simulation/sensingYield/pd_grad.txt")
+    SPG = np.loadtxt("/home/Taehwan/simulation/sensingYield/pg_grad.txt")
+    
+    New_ratio = (originDVBL - SPG)/(originDVBL-SPD)
+    previous_ratio = osv_pg/osv_pd
+    # print("New ratio and previous ratio are :",[New_ratio, previous_ratio])
+    # print("Current iteration")
+    print("Current Error rate : ",abs(New_ratio - previous_ratio)/New_ratio )
+    ### if gradient error <= 3%, break
+    if abs(New_ratio - previous_ratio)/New_ratio <= 0.03:
+        print ("compensated OSV is :",[osv_pd, osv_pg, osv_vos])
+        break
+    
+    [New_pdRatio, New_pgRatio,New_vosRatio] = [previousRatio[1]*(1/New_ratio),previousRatio[1], previousRatio[2] ]
+    
+    PD_list = np.array(".param pdl_vth = 'opt*{}*vt_sigma'".format(New_pdRatio))
+    PG_list = np.array(".param pgl_vth = 'opt*{}*vt_sigma'".format(New_pgRatio))
+    VOS_list = np.array(".param vos_vth = 'opt*{}*vos_sigma'".format(New_vosRatio))
+    total_list = np.r_[PD_list, PG_list, VOS_list]
+    np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio.sp", total_list, fmt='%s')
+    subprocess.call("runHspice SRAMbisection.sp", shell=True)
+    
+    subprocess.call("grep '.param opt' SRAMbisection.lis | awk '{print $4}' > bisectionValue.txt ", shell=True)
+    New_bValue = np.loadtxt("/home/Taehwan/simulation/sensingYield/bisectionValue.txt")
+    
+    osv_pd = New_bValue*New_pdRatio
+    osv_pg = New_bValue*New_pgRatio
+    osv_vos = New_bValue*New_vosRatio
+    OSV_sigma = [osv_pd, osv_pg, osv_vos]
+    # print ("compensated OSV is :",[osv_pd, osv_pg, osv_vos])
+    # print("current iteration = ", i)
+    # ax2.scatter(osv_pd,osv_pg, label='MPFP_comp{}'.format(i))
+    MPFPlist.append([osv_pd, osv_pg])
+    i += 1
+
+
+
+# X_osv = []
+# Y_osv = []
+# for a in MPFPlist:
+#     X_osv.append(a[0])
+#     Y_osv.append(a[1])
+# #### Plot
+# pgl_space = np.linspace(0, 8, 41)
+# pdl_space = np.linspace(0, 8, 41)
+
+# vbl_data = np.loadtxt('/home/Taehwan/simulation/sensingYield/2DsweepPGPD/vbl170p.txt' , delimiter="\t").reshape(41,41)
+# pdl_i, pgl_i = np.meshgrid(pdl_space, pgl_space)
+
+# f2 , ax2= plt.subplots(figsize=(6,6))
+# ax2.contour(pdl_i, pgl_i, vbl_data, levels=np.arange(-0.001,0.27,0.01), linewidths=0.15, colors='k') 
+# cntr = ax2.contourf(pdl_i, pgl_i, vbl_data, levels=np.arange(-0.001,0.27,0.01), cmap="RdBu_r")
+# plt.colorbar(cntr) 
+# ax2.set_aspect('equal')
+# # ax2.scatter(X_osv,Y_osv, s=30)
+# # ax2.set_xlabel("PD sigma")
+# # ax2.set_ylabel("PG sigma")
+# ax2.set_xlim(0,5)
+# ax2.set_ylim(0,5)
+# # ax2.legend()
+
+final_pd = New_bValue*New_pdRatio
+final_pg = New_bValue*New_pgRatio
+final_vos = New_bValue*New_vosRatio
+OSV = np.r_[final_pd, final_pg, final_vos]
+print ("final OSV is :",[final_pd, final_pg, final_vos])
+
+np.savetxt("/home/Taehwan/simulation/sensingYield/OSV_dir/OSV{}p_{}{}{}.txt".format(Tsae, nfin_pd, nfin_pu, nfin_foot), OSV)
+np.savetxt("/home/Taehwan/simulation/sensingYield/OSV_dir/OSV{}p_{}{}{}_ncomp.txt".format(Tsae, nfin_pd, nfin_pu, nfin_foot), previousOSV)
+
+MPFP = np.sqrt(OSV_sigma[0]**2+OSV_sigma[1]**2+OSV_sigma[2]**2)
+print("MPFP = ", MPFP)
