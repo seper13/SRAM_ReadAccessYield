@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import os
+import numpy as np
+import scipy.stats
+from scipy.interpolate import interp1d
+
+ISMC_fail = []
+os.chdir("/home/Taehwan/simulation/YieldMonte")
+Tsae = np.loadtxt("/home/Taehwan/simulation/YieldMonte/Tsae0.txt")
+niter = 1000
+for pwd in Tsae:
+    ISMC_fail.append(np.loadtxt("./mean_ISMC{}p_{}.txt".format(int(pwd), niter)))
+    
+Ffail = {}
+for pwd in range(0,30):
+    dummy_list = []
+    for aa in range(0,13):
+        dummy_list.append(ISMC_fail[aa][int(pwd)])
+    Ffail["{}".format(pwd)] = np.array(dummy_list)
+    
+sigma_list = np.linspace(-6,6,13)
+Fseed = {}
+for ll in range(0,30):
+    Fseed["{}".format(int(ll))] = interp1d(sigma_list,Ffail["{}".format(int(ll))],kind = 'linear')
+    
+rv = scipy.stats.norm(loc = 0, scale = 1)
+cal_range = np.linspace(-6,6,131)
+i = 0
+yield_list = []
+for mm in range(0,30):
+    value = 0
+    i=0
+    while True:
+        value += (rv.cdf(cal_range[i+1]) - rv.cdf(cal_range[i]))*Fseed["{}".format(int(mm))](cal_range[i+1])
+        i += 1
+        if i >= 129:
+            break
+    yield_list.append(value)
+print("{} iteration mean = ".format(niter), np.average(yield_list))
+print("{} iteration sigma/mean = ".format(niter), np.std(yield_list)/np.average(yield_list))
+
+np.savetxt("/home/Taehwan/simulation/FoM_dir/mean_ISMC_{}.txt".format(int(niter)), np.array(yield_list))
