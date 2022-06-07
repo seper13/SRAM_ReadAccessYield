@@ -1,0 +1,95 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import os
+import sys
+import subprocess
+import numpy as np
+from scipy.interpolate import interp1d
+
+SAE_time = int(sys.argv[1])
+nfin_pd = int(sys.argv[2])
+nfin_pu = int(sys.argv[3])
+nfin_foot = int(sys.argv[4])
+
+if len(sys.argv) != 5:
+ 	print("ERROR! Please insert your input properly:")
+ 	print("Usage : osvCAL.py T_SAE(ps) nfin_SAPD")
+ 	sys.exit()
+     
+# SAE_time = 65
+# nfin_pd = 1
+# nfin_pu = 1
+# nfin_foot = 6
+
+os.chdir("/home/Taehwan/simulation/VLSA_OS")
+subprocess.call("./Vos_calculator.py {} {} {}".format(nfin_pd, nfin_pu, nfin_foot), shell = True)
+vos_sigma = np.loadtxt("/home/Taehwan/simulation/VLSA_OS/Vos_dir/vos{}{}{}.txt".format(nfin_pd,nfin_pu,nfin_foot))
+
+os.chdir("/home/Taehwan/simulation/sensingYield")
+### PG, PD Data Loading
+range_min = 0
+range_max = 16
+range_step = 81
+range_stepVOS = range_step*3
+inter_step = 1001
+inter_stepVOS = 3001
+sigmaRange = np.linspace(range_min,range_max,range_step)
+sigmaRangeVOS = np.linspace(range_min,3*range_max,range_stepVOS)
+interpolationRange = np.linspace(range_min, range_max, inter_step )
+interpolationRangeVOS = np.linspace(range_min, 3*range_max, inter_stepVOS )
+interpolationRange_step = interpolationRange[1] - interpolationRange[0]
+interpolationRange_stepVOS = interpolationRangeVOS[1] - interpolationRangeVOS[0]
+pdData = np.loadtxt("/home/Taehwan/simulation/sensingYield/sweepData/PDvbl{}p.txt".format(SAE_time))
+pgData = np.loadtxt("/home/Taehwan/simulation/sensingYield/sweepData/PGvbl{}p.txt".format(SAE_time))
+
+NONsigmavarVBL = pgData[0]
+targetVBL = 0.015
+if SAE_time <= 35:
+    targetVBL = 0.01
+
+vosData = []
+for a in sigmaRangeVOS:
+    vosData.append(a*vos_sigma)
+    
+### interpolation PD, PG, VOS Sweep Data
+fPD = interp1d(sigmaRange, pdData)
+fPG = interp1d(sigmaRange, pgData)
+fVOS = interp1d(sigmaRangeVOS, vosData)
+
+fPD_Data = []
+fPG_Data = []
+fVOS_Data = []
+
+for a in interpolationRange:
+    fPD_Data.append(fPD(a))
+    fPG_Data.append(fPG(a))
+for a in interpolationRangeVOS:
+    fVOS_Data.append(fVOS(a))
+    
+[ fPD_Data, fPG_Data, fVOS_Data ] = [ np.array(fPD_Data), np.array(fPG_Data), np.array(fVOS_Data) ]
+[ dummyPD, dummyPG, dummyVOS ] = [ abs(fPD_Data - targetVBL), abs(fPG_Data - targetVBL),abs(fVOS_Data - (NONsigmavarVBL - targetVBL)) ]
+[ indexPD, indexPG, indexVOS ] = [ list(np.where(dummyPD == np.min(dummyPD))),list(np.where(dummyPG == np.min(dummyPG))),
+                                  list(np.where(dummyVOS == np.min(dummyVOS)))]
+[ pdRatio, pgRatio, vosRatio] = [ 1/(interpolationRange_step*indexPD[0][0]), 1/(interpolationRange_step*indexPG[0][0]), 1/(interpolationRange_stepVOS*indexVOS[0][0])]
+
+
+### Ratio Normalization
+pdRatio = pdRatio / vosRatio
+pgRatio = pgRatio / vosRatio
+vosRatio = vosRatio / vosRatio
+### saving Ratio & bisectionTimeList
+PD_list = np.array(".param pdl_vth = 'opt*{}*vt_sigma'".format(pdRatio))
+PG_list = np.array(".param pgl_vth = 'opt*{}*vt_sigma'".format(pgRatio))
+VOS_list = np.array(".param vos_vth = 'opt*{}*vos_sigma'".format(vosRatio))
+total_list = np.r_[PD_list, PG_list, VOS_list]
+total_list_nonSPform = [pdRatio, pgRatio, vosRatio]
+VOSvalue = [".param vos_sigma = '{}'".format(vos_sigma)]
+bisectionTimeList = [".meas tran vblb_v_test find v(vblb) at='wl_rise + {}p'".format(SAE_time),
+                      ".meas tran vbl_v_test find v(vbl) at='wl_rise + {}p'".format(SAE_time)]
+bisectionTimeList = np.r_[np.array(bisectionTimeList[0]), np.array(bisectionTimeList[1])]
+
+np.savetxt("/home/Taehwan/simulation/sensingYield/VOSsigma.sp", VOSvalue, fmt='%s')
+np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio.sp", total_list, fmt='%s')
+np.savetxt("/home/Taehwan/simulation/sensingYield/Ratio.txt", total_list_nonSPform, fmt='%s')
+np.savetxt("/home/Taehwan/simulation/sensingYield/bisectionTime.sp", bisectionTimeList, fmt='%s')
