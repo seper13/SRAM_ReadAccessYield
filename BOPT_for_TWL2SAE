@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+import sys
+import fileinput
+import subprocess
+import numpy as np
+import math
+import pandas as pd
+import scipy as sp
+import scipy.stats
+import re
+import hspiceSimTool as hsp
+import random as rd
+import matplotlib.pyplot as plt
+from scipy.stats import probplot
+from bayes_opt import BayesianOptimization
+from bayes_opt import UtilityFunction
+from scipy.stats import norm
+from scipy.interpolate import interp1d
+import probTool_Taehwan as PTTH
+
+nfin = 1
+plt.style.use('fast')
+
+riseDelay1 = np.loadtxt("/home/Taehwan/simulation/3invTEST/stepConv/riseDelay{}.txt".format(nfin)).reshape(33,1)
+fallDelay1 = np.loadtxt("/home/Taehwan/simulation/3invTEST/stepConv/fallDelay{}.txt".format(nfin)).reshape(33,1)
+sae_rise_full = np.loadtxt("/home/Taehwan/simulation/YieldMonte/test_seedExpan100_grep_sae_rise.txt")[0:5000000]
+iteration_start = 0
+iteration_interval = 2000 ############## changed 2000 to 5000
+for ITER in range(0,1):
+    
+    name = "SAE_risedelayfitting_10116_{}.txt".format(ITER)
+    totalDelay6_full = sae_rise_full
+    totalDelay6 = np.sort(totalDelay6_full[iteration_start:iteration_start + iteration_interval])
+    
+    xREAL = np.linspace(-8,8,len(riseDelay1))
+    NtotalDelay6 = len(totalDelay6)
+    
+    #### rising & falling Delay Convolution with ratio ==> Base Model
+    sigmabnd = 8
+    sigmaRange = np.arange(-sigmabnd,sigmabnd+0.5,0.5)
+
+    
+    sigma_input = np.linspace(1.645,-1.645,100) ################# changed 1.645 to 2
+    Monte_List = []
+    for k in sigma_input:
+        Monte_List.append(np.average(totalDelay6[PTTH.findSigma(NtotalDelay6, k)-2 : PTTH.findSigma(NtotalDelay6,k)+3]))
+
+    sixAry = []
+    for a in sigma_input:
+        sixAry.append(totalDelay6[PTTH.findSigma(NtotalDelay6,a)])
+    
+    # ### Monte value extraction
+    sixsigma0_value = totalDelay6[PTTH.findSigma(NtotalDelay6,0)]
+    
+    def Loss(function, valueAry):
+        Loss1 = 0
+        i=0
+        ## Loss 1 Cal
+        L1_function_List = []
+        valueAry_List = []
+        for l in sigma_input:
+            L1_function_List.append(abs(l)*function(l))
+            valueAry_List.append(abs(l)*valueAry[i])
+            i += 1
+        L1_function_List = np.array(L1_function_List)
+        valueAry = np.array(valueAry_List)
+        Loss1_diff = abs(valueAry - L1_function_List)
+        Loss1 = np.average(Loss1_diff)
+        # print("Loss1 = ", Loss1)
+        return Loss1
+    
+    
+    ##BO Run 1 to 6 direct
+    optimizer= BayesianOptimization(
+        f=None,
+        pbounds={'ratio1': (1,35),
+                   'ratio2':(1,35), 'region' : (3, 7.65)
+                  }, 
+        verbose=2,
+        random_state=1,)
+    
+    utility = UtilityFunction(kind="ei", kappa=1.96, xi=0)  
+      
+    init_input1 = {'ratio1':10,  'ratio2':10, 'region':6}
+        
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay1,riseDelay1, X_range1 = sigmaRange, 
+                                                X_range2 = sigmaRange, ratio1=init_input1['ratio1'], 
+                                                ratio2=init_input1['ratio2'] , Conv_N=200, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    customRange = np.linspace(-init_input1['region'], init_input1['region'], 200)
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue))
+    
+    diff = sixsigma0_value - fl(0)
+    
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    init_output1 = Loss(fl,sixAry)
+    optimizer.register(params = init_input1, target = -init_output1)
+    
+    init_input2 = {'ratio1':5,  'ratio2':5, 'region':5}
+    
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay1,riseDelay1, X_range1 = sigmaRange, 
+                                                X_range2 = sigmaRange, ratio1=init_input2['ratio1'], 
+                                                ratio2=init_input2['ratio2'] , Conv_N=200, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    customRange = np.linspace(-init_input2['region'], init_input2['region'], 200)
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue))
+    
+    diff = sixsigma0_value - fl(0)
+    
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    init_output2 = Loss(fl, sixAry)
+    optimizer.register(params = init_input2, target = -init_output2)
+    
+    loss_list = []
+    k = 0
+    while True:
+        next_point = optimizer.suggest(utility)
+        
+        [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay1,riseDelay1, X_range1 = sigmaRange, 
+                                                X_range2 = sigmaRange, ratio1=next_point['ratio1'], 
+                                                ratio2=next_point['ratio2'] , Conv_N=200, inverse = 1 )
+        [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+        
+        
+        customRange = np.linspace(-next_point['region'], next_point['region'], 200)
+        fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue))
+        
+        diff = sixsigma0_value - fl(0)
+        
+        fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+        loss_value = Loss(fl, sixAry)
+        
+        optimizer.register(params = next_point, target = -loss_value)
+        loss_list.append(-optimizer.max['target'])
+        print("current input value = ", next_point)
+        print("current Loss Value = ", -loss_value)
+        print("iteration_number : ", k)
+        print("current maximum value = ", optimizer.max)
+        
+        k += 1
+    
+        
+        if k >= 100:
+            print("optimized result : ", optimizer.max)
+            # k=0
+            break
+    
+    ratio1 = optimizer.max['params']['ratio1']
+    ratio2 = optimizer.max['params']['ratio2']
+    region = optimizer.max['params']['region']
+    
+  
+    
+    [CDFy,CDFy_delay, Conv_N] = PTTH.pdfCONV_2ratio(fallDelay1,riseDelay1, X_range1 = sigmaRange, 
+                                                X_range2 = sigmaRange, ratio1=ratio1, 
+                                                ratio2=ratio2 , Conv_N=200, inverse = 1 )
+    [fittedRange ,fittedValue ]= PTTH.ConvProbExtract(CDFy, CDFy_delay, Conv_N)
+    
+    customRange = np.linspace(-region, region, 200)
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue))
+    
+    diff = sixsigma0_value - fl(0)
+    
+    fl = PTTH.customInterp1d(np.array(fittedRange), customRange, np.array(fittedValue)+diff)
+    
+    Loss_value = Loss(fl,sixAry)
+    
+    final_value = []
+    for p in fittedRange:
+        final_value.append(fl(p))
+    
+    scaling = 9e-10
+    
+    fig, ax = plt.subplots(1, 1, figsize=(5, 4))
+    plt.plot(fittedRange,np.array(final_value)-scaling,linestyle='--')
+  
+    scipy.stats.probplot(totalDelay6_full-scaling, plot=plt)
+    ax.get_lines()[2].remove()
+    
+    loss_range = np.linspace(0,96,97, endpoint='False')
+    plt.scatter(loss_range, 1e12*np.array(loss_list), s=15)
+    plt.plot(loss_range, 1e12*np.array(loss_list),linestyle='--')
+    plt.yscale("log")
+    
+    plt.title("500,000 Monte Data vs SAE Fitting Result")
+    plt.legend()
+    
+    final_array = np.c_[fittedRange, final_value]
+    np.savetxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/{}".format(name), final_array)
+    np.savetxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/Ztrain.txt", np.flipud(sigma_input))
+    np.savetxt("/home/Taehwan/simulation/wl2saeModel/WLfittingResult/Dtrain.txt", np.flipud(sixAry))
+    iteration_start += iteration_interval
+    
